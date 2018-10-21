@@ -32,8 +32,12 @@ static int hf_ncsi_iid = -1;
 static int hf_ncsi_ctrl_pkt_type = -1;
 static int hf_ncsi_ch_id = -1;
 static int hf_ncsi_payload_len = -1;
+static int hf_ncsi_cmd_response = -1;
+static int hf_ncsi_cmd_reason = -1;
 static int hf_ncsi_cmd_oem_req = -1;
 static int hf_ncsi_cmd_oem_resp = -1;
+static int hf_ncsi_oem_mid = -1;
+static int hf_ncsi_oem_vdata = -1;
 
 static gint ett_ncsi = -1;
 static gint ett_ncsi_cmd = -1;
@@ -48,6 +52,7 @@ dissect_ncsi(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data _U_
 {
   guint32 offset = 0;
   guint32 cmd = 0;
+  guint32 plen = 0;
   dissector_handle_t cmd_handle;
 
   col_set_str(pinfo->cinfo, COL_PROTOCOL, "NCSI");
@@ -58,26 +63,32 @@ dissect_ncsi(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data _U_
   proto_tree_add_item(ncsi_tree, hf_ncsi_mc_id, tvb, 0, 1, ENC_BIG_ENDIAN);
   proto_tree_add_item(ncsi_tree, hf_ncsi_header_rev, tvb, 1, 1, ENC_BIG_ENDIAN);
   proto_tree_add_item(ncsi_tree, hf_ncsi_iid, tvb, 3, 1, ENC_BIG_ENDIAN);
-  proto_tree_add_item(ncsi_tree, hf_ncsi_ctrl_pkt_type, tvb, 4, 1, ENC_BIG_ENDIAN);
   proto_tree_add_item_ret_uint(ncsi_tree, hf_ncsi_ctrl_pkt_type, tvb, 4, 1, ENC_BIG_ENDIAN, &cmd);
   proto_tree_add_item(ncsi_tree, hf_ncsi_ch_id, tvb, 5, 1, ENC_BIG_ENDIAN);
-  proto_tree_add_item(ncsi_tree, hf_ncsi_payload_len, tvb, 6, 2, ENC_BIG_ENDIAN);
+  proto_tree_add_item_ret_uint(ncsi_tree, hf_ncsi_payload_len, tvb, 6, 2, ENC_BIG_ENDIAN, &plen);
 
   offset = 16;
+
+  if (cmd > 128) {
+    // Decode command response/reason that are present on all responses
+    proto_tree_add_item(ncsi_tree, hf_ncsi_cmd_response, tvb, offset, 2, ENC_BIG_ENDIAN);
+    proto_tree_add_item(ncsi_tree, hf_ncsi_cmd_reason, tvb, offset + 2, 2, ENC_BIG_ENDIAN);
+    offset += 4;
+  }
 
   cmd_handle = dissector_get_uint_handle(ncsi_cmd_table, cmd);
   if (cmd_handle != NULL)
   {
     tvbuff_t *tvb_sub;
-    tvb_sub = tvb_new_subset_remaining(tvb, offset);
-    call_dissector(cmd_handle, tvb_sub, pinfo, tree);
+    tvb_sub = tvb_new_subset_length(tvb, offset, plen);
+    offset += call_dissector(cmd_handle, tvb_sub, pinfo, tree);
   }
   else
   {
     col_append_sep_str(pinfo->cinfo, COL_INFO, ", ", "[unknown command]");
     expert_add_info(pinfo, ti, &ei_ncsi_cmd_unknown);
   }
-  return tvb_captured_length(tvb);
+  return offset;
 }
 
 void
@@ -85,28 +96,40 @@ proto_register_ncsi(void)
 {
   static hf_register_info hf[] = {
     { &hf_ncsi_mc_id,
-      { "NCSI MC ID", "ncsi.mc", FT_UINT8, BASE_DEC, NULL, 0x0, NULL, HFILL }
+      { "MC ID", "ncsi.mc", FT_UINT8, BASE_DEC, NULL, 0x0, NULL, HFILL }
     },
     { &hf_ncsi_header_rev,
-      { "NCSI Header Revision", "ncsi.hdr_rev", FT_UINT8, BASE_DEC, NULL, 0x0, NULL, HFILL }
+      { "Header Revision", "ncsi.hdr_rev", FT_UINT8, BASE_DEC, NULL, 0x0, NULL, HFILL }
     },
     { &hf_ncsi_iid,
-      { "NCSI Instance ID", "ncsi.iid", FT_UINT8, BASE_DEC, NULL, 0x0, NULL, HFILL }
+      { "Instance ID", "ncsi.iid", FT_UINT8, BASE_DEC, NULL, 0x0, NULL, HFILL }
     },
     { &hf_ncsi_ctrl_pkt_type,
-      { "NCSI Control Packet Type", "ncsi.ctrl_pkt_type", FT_UINT8, BASE_HEX, NULL, 0x0, NULL, HFILL }
+      { "Control Packet Type", "ncsi.ctrl_pkt_type", FT_UINT8, BASE_HEX, NULL, 0x0, NULL, HFILL }
     },
     { &hf_ncsi_ch_id,
-      { "NCSI Channel ID", "ncsi.ch_id", FT_UINT8, BASE_DEC, NULL, 0x0, NULL, HFILL }
+      { "Channel ID", "ncsi.ch_id", FT_UINT8, BASE_DEC, NULL, 0x0, NULL, HFILL }
     },
     { &hf_ncsi_payload_len,
-      { "NCSI Payload Length", "ncsi.payload_len", FT_UINT16, BASE_DEC, NULL, 0x0, NULL, HFILL }
+      { "Payload Length", "ncsi.payload_len", FT_UINT16, BASE_DEC, NULL, 0xfff, NULL, HFILL }
+    },
+    { &hf_ncsi_cmd_response,
+      { "Response Code", "ncsi.response", FT_UINT16, BASE_HEX, NULL, 0x0, NULL, HFILL }
+    },
+    { &hf_ncsi_cmd_reason,
+      { "Reason Code", "ncsi.reason", FT_UINT16, BASE_HEX, NULL, 0x0, NULL, HFILL }
     },
     { &hf_ncsi_cmd_oem_req,
-      { "NCSI OEM request", "ncsi.oem_req", FT_NONE, BASE_NONE, NULL, 0x0, NULL, HFILL }
+      { "OEM Request", "ncsi.oem_req", FT_NONE, BASE_NONE, NULL, 0x0, NULL, HFILL }
     },
     { &hf_ncsi_cmd_oem_resp,
-      { "NCSI OEM response", "ncsi.oem_resp", FT_NONE, BASE_NONE, NULL, 0x0, NULL, HFILL }
+      { "OEM Response", "ncsi.oem_resp", FT_NONE, BASE_NONE, NULL, 0x0, NULL, HFILL }
+    },
+    { &hf_ncsi_oem_mid,
+      { "Manufacturer ID", "ncsi.oem.mid", FT_UINT32, BASE_HEX, NULL, 0x0, NULL, HFILL }
+    },
+    { &hf_ncsi_oem_vdata,
+      { "Vendor data", "ncsi.oem.vendor_data", FT_BYTES, BASE_NONE, NULL, 0x0, NULL, HFILL }
     }
   };
 
@@ -136,6 +159,10 @@ dissect_ncsi_oem_resp(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *tree _U
   col_append_str(pinfo->cinfo, COL_INFO, "OEM response");
   ti = proto_tree_add_item(tree, hf_ncsi_cmd_oem_resp, tvb, 0, -1, ENC_NA);
   tree = proto_item_add_subtree(ti, ett_ncsi_cmd);
+
+  proto_tree_add_item(tree, hf_ncsi_oem_mid, tvb, 0, 4, ENC_BIG_ENDIAN);
+  proto_tree_add_item(tree, hf_ncsi_oem_vdata, tvb, 4,
+                      tvb_captured_length(tvb) - 4, ENC_BIG_ENDIAN);
   return tvb_captured_length(tvb);
 }
 
@@ -146,6 +173,9 @@ dissect_ncsi_oem_req(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *tree _U_
   col_append_str(pinfo->cinfo, COL_INFO, "OEM request");
   ti = proto_tree_add_item(tree, hf_ncsi_cmd_oem_req, tvb, 0, -1, ENC_NA);
   tree = proto_item_add_subtree(ti, ett_ncsi_cmd);
+  proto_tree_add_item(tree, hf_ncsi_oem_mid, tvb, 0, 4, ENC_BIG_ENDIAN);
+  proto_tree_add_item(tree, hf_ncsi_oem_vdata, tvb, 4,
+                      tvb_captured_length(tvb) - 4, ENC_BIG_ENDIAN);
   return tvb_captured_length(tvb);
 }
 
